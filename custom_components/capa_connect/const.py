@@ -38,6 +38,10 @@ MODE_OFF = 0
 MODE_AWAY = 2  # frost/away, holds ~7 C
 MODE_COMFORT = 5  # permanent, uses the zone's ComfortTemp
 MODE_ECO = 8  # permanent, uses the zone's EcoTemp
+# The device is following its assigned schedule. The active block's effective
+# setpoint is reflected in CurrentTemperature; 255 means the block is off (as in
+# the default "24 hour Off" schedule), any other value means it is heating.
+MODE_SCHEDULE = 13
 
 # "No setpoint" sentinel the API uses for modes without a target temperature.
 TEMP_NONE = 255

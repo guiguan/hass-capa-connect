@@ -26,6 +26,7 @@ from .const import (
     MODE_COMFORT,
     MODE_ECO,
     MODE_OFF,
+    MODE_SCHEDULE,
     MODE_TO_PRESET,
     PRESET_AWAY,
     PRESET_COMFORT,
@@ -163,14 +164,25 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], RestoreEntity, ClimateEnti
         return None
 
     @property
+    def _is_off(self) -> bool:
+        # Hard off (mode 0), or following a schedule whose current block is off
+        # (schedule mode with no active setpoint, e.g. the "24 hour Off" default
+        # schedule). Both mean the heater is not maintaining any heat.
+        z = self._zone
+        mode = z.get("mode")
+        if mode == MODE_OFF:
+            return True
+        return mode == MODE_SCHEDULE and z.get("setpoint") in (None, TEMP_NONE)
+
+    @property
     def hvac_mode(self) -> HVACMode:
-        return HVACMode.OFF if self._zone.get("mode") == MODE_OFF else HVACMode.HEAT
+        return HVACMode.OFF if self._is_off else HVACMode.HEAT
 
     @property
     def hvac_action(self) -> HVACAction:
-        z = self._zone
-        if z.get("mode") == MODE_OFF:
+        if self._is_off:
             return HVACAction.OFF
+        z = self._zone
         current = z.get("room_temp")
         target = self.target_temperature
         if current is not None and target is not None and current < target:
