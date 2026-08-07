@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for Capa Connect: polls the cloud for zone state."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -34,10 +35,10 @@ class CapaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
         )
-        self.entry = entry
         self.client = client
         self.auth = auth
 
@@ -46,9 +47,16 @@ class CapaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             zones: dict[str, Any] = {}
             for site in await self.client.get_sites():
                 site_id = site["Id"]
-                temps = await self.client.get_room_temps(site_id)
-                for z in await self.client.get_zones(site_id):
-                    detail = await self.client.get_zone(z["Id"], site_id)
+                # room temps and the zone list are independent; the per-zone
+                # detail fetches are independent of each other — fetch concurrently.
+                temps, zone_list = await asyncio.gather(
+                    self.client.get_room_temps(site_id),
+                    self.client.get_zones(site_id),
+                )
+                details = await asyncio.gather(
+                    *(self.client.get_zone(z["Id"], site_id) for z in zone_list)
+                )
+                for z, detail in zip(zone_list, details):
                     setting = detail.get("DirectZoneSetting") or {}
                     appliances = detail.get("DirectAppliances") or []
                     app = appliances[0] if appliances else {}
@@ -76,7 +84,8 @@ class CapaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _persist_rotated_token(self) -> None:
         token = self.auth.refresh_token
-        if token and token != self.entry.data.get("refresh_token"):
+        entry = self.config_entry
+        if entry and token and token != entry.data.get("refresh_token"):
             self.hass.config_entries.async_update_entry(
-                self.entry, data={**self.entry.data, "refresh_token": token}
+                entry, data={**entry.data, "refresh_token": token}
             )

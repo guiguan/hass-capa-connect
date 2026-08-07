@@ -1,6 +1,7 @@
 """Climate entity for a Capa Connect heater zone."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -10,10 +11,11 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.const import ATTR_TEMPERATURE, PRECISION_WHOLE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -42,18 +44,30 @@ def _round_half_up(value: float) -> int:
     return int(value + 0.5)
 
 
+@dataclass
+class _ResumeData(ExtraStoredData):
+    """Mode + setpoint to resume when the heater is next turned on, persisted
+    across restarts via RestoreEntity."""
+
+    mode: int | None
+    setpoint: int | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"mode": self.mode, "setpoint": self.setpoint}
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: CapaCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: CapaCoordinator = entry.runtime_data
     async_add_entities(
         CapaClimate(coordinator, zone_id) for zone_id in coordinator.data["zones"]
     )
 
 
-class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
+class CapaClimate(CoordinatorEntity[CapaCoordinator], RestoreEntity, ClimateEntity):
     """One heater zone exposed as a HA climate entity."""
 
     _attr_has_entity_name = True
@@ -69,9 +83,8 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
     )
     _attr_min_temp = MIN_TEMP
     _attr_max_temp = MAX_TEMP
-    # The heater only accepts whole degrees (it rounds 17.5 -> 18), so step by 1
-    # in HA. HA propagates this to HomeKit's TargetTemperature minStep too.
-    _attr_target_temperature_step = 1
+    # The heater only accepts whole degrees (it rounds 17.5 -> 18).
+    _attr_target_temperature_step = PRECISION_WHOLE
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: CapaCoordinator, zone_id: str) -> None:
@@ -83,14 +96,30 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
         self._resume_mode: int | None = None
         self._resume_setpoint: int | None = None
 
-    def _handle_coordinator_update(self) -> None:
-        # Snapshot the last heating state on every poll, so a turn-on can resume
-        # it even when the heater was switched off outside HA (app / button).
+    def _snapshot_resume(self) -> None:
+        # Remember the current heating mode + setpoint so a later turn-on resumes
+        # it. Called from polls (covers off-outside-HA) and just before turn-off.
         z = self._zone
         if z.get("mode") in HEATING_MODES:
             self._resume_mode = z.get("mode")
             self._resume_setpoint = z.get("setpoint")
+
+    def _handle_coordinator_update(self) -> None:
+        self._snapshot_resume()
         super()._handle_coordinator_update()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # Restore the resume state persisted before the last restart, so a
+        # turn-on after a restart-while-off still resumes the right mode/temp.
+        if (restored := await self.async_get_last_extra_data()) is not None:
+            data = restored.as_dict()
+            self._resume_mode = data.get("mode")
+            self._resume_setpoint = data.get("setpoint")
+
+    @property
+    def extra_restore_state_data(self) -> _ResumeData:
+        return _ResumeData(self._resume_mode, self._resume_setpoint)
 
     @property
     def _zone(self) -> dict[str, Any]:
@@ -156,29 +185,23 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
-        target = _round_half_up(temp)
-        z = self._zone
-        await self.coordinator.client.set_setpoint(z["site_id"], self._zone_id, target)
-        self._apply_optimistic(setpoint=target)
+        await self._write_setpoint(_round_half_up(temp))
         await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.OFF:
-            z = self._zone
-            if z.get("mode") in HEATING_MODES:
-                # Capture the latest (incl. optimistic) state before off clears it.
-                self._resume_mode = z.get("mode")
-                self._resume_setpoint = z.get("setpoint")
+            self._snapshot_resume()
             await self._set_mode(MODE_OFF)
             return
-        # Resume the pre-off mode, falling back to Comfort if we never saw one.
+        # Resume the pre-off mode + setpoint with a single reconciling refresh,
+        # falling back to Comfort's stored temperature if no heating state was
+        # ever observed.
         mode = self._resume_mode if self._resume_mode in HEATING_MODES else MODE_COMFORT
-        await self._set_mode(mode)
-        # Restore a live setpoint override, if there was one, via the setpoint
-        # endpoint (the verified way to set a per-zone override).
+        await self._write_mode(mode)
         resume = self._resume_setpoint
         if isinstance(resume, int) and resume != TEMP_NONE:
-            await self.async_set_temperature(**{ATTR_TEMPERATURE: resume})
+            await self._write_setpoint(resume)
+        await self.coordinator.async_request_refresh()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         mode = PRESET_TO_MODE.get(preset_mode)
@@ -186,14 +209,25 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
             await self._set_mode(mode)
 
     async def _set_mode(self, mode: int) -> None:
+        await self._write_mode(mode)
+        await self.coordinator.async_request_refresh()
+
+    async def _write_mode(self, mode: int) -> None:
+        # Write a mode without refreshing (the caller reconciles). TEMP_NONE keeps
+        # the zone's stored Comfort/Eco setpoint and clears any live override.
         z = self._zone
-        # TEMP_NONE keeps the zone's stored Comfort/Eco setpoint and clears any
-        # live per-zone setpoint override.
         await self.coordinator.client.set_mode(
             z["site_id"], self._zone_id, mode, TEMP_NONE
         )
         self._apply_optimistic(mode=mode, setpoint=TEMP_NONE)
-        await self.coordinator.async_request_refresh()
+
+    async def _write_setpoint(self, temperature: int) -> None:
+        # Write a live setpoint override without refreshing (caller reconciles).
+        z = self._zone
+        await self.coordinator.client.set_setpoint(
+            z["site_id"], self._zone_id, temperature
+        )
+        self._apply_optimistic(setpoint=temperature)
 
     def _apply_optimistic(
         self, *, mode: int | None = None, setpoint: int | None = None

@@ -15,6 +15,7 @@ import aiohttp
 from .const import (
     API_BASE,
     AUTHORIZE_URL,
+    B2C_POLICY,
     CLIENT_ID,
     CONFIRMED_URL,
     DEVICE_HEADERS,
@@ -26,6 +27,12 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# The GDHV write endpoints expect this validation envelope on every mutation.
+_VALIDATION = {
+    "IsValidationEnabled": True,
+    "Errors": {"Errors": {}, "IsValidationEnabled": True},
+}
 
 
 class CapaAuthError(Exception):
@@ -137,7 +144,7 @@ class CapaAuth:
         # 2) Submit credentials to SelfAsserted. B2C's AJAX endpoint requires
         # both the CSRF token and the XMLHttpRequest marker, else it 403s / returns
         # HTML instead of the {"status": ...} JSON.
-        sa_params = {"tx": trans_id, "p": _policy()}
+        sa_params = {"tx": trans_id, "p": B2C_POLICY}
         sa_headers = {
             "X-CSRF-TOKEN": csrf,
             "X-Requested-With": "XMLHttpRequest",
@@ -159,7 +166,7 @@ class CapaAuth:
             "rememberMe": "false",
             "csrf_token": csrf,
             "tx": trans_id,
-            "p": _policy(),
+            "p": B2C_POLICY,
         }
         async with self._session.get(
             CONFIRMED_URL, params=conf_params, allow_redirects=False
@@ -189,12 +196,6 @@ class CapaAuth:
         return self._refresh_token
 
 
-def _policy() -> str:
-    from .const import B2C_POLICY
-
-    return B2C_POLICY
-
-
 class CapaClient:
     """Thin wrapper over the GDHV device API. All methods auto-authenticate."""
 
@@ -212,7 +213,7 @@ class CapaClient:
         ) as resp:
             if resp.status != 200:
                 raise CapaApiError(f"GET {path} -> {resp.status}: {await resp.text()}")
-            return await resp.json(content_type=None)
+            return await _read_json(resp, f"GET {path}")
 
     async def _post(self, path: str, body: dict[str, Any]) -> Any:
         headers = {**await self._headers(), "Content-Type": "application/json"}
@@ -221,8 +222,7 @@ class CapaClient:
         ) as resp:
             if resp.status != 200:
                 raise CapaApiError(f"POST {path} -> {resp.status}: {await resp.text()}")
-            text = await resp.text()
-            return json.loads(text) if text.strip() else None
+            return await _read_json(resp, f"POST {path}")
 
     # --- reads ---
     async def get_sites(self) -> list[dict[str, Any]]:
@@ -255,8 +255,7 @@ class CapaClient:
                 "Mode": mode,
                 "OverrideDateTo": None,
                 "Temperature": temperature,
-                "IsValidationEnabled": True,
-                "Errors": {"Errors": {}, "IsValidationEnabled": True},
+                **_VALIDATION,
             },
         )
 
@@ -269,7 +268,6 @@ class CapaClient:
                 "SiteId": site_id,
                 "ZoneId": zone_id,
                 "NewTemperature": temperature,
-                "IsValidationEnabled": True,
-                "Errors": {"Errors": {}, "IsValidationEnabled": True},
+                **_VALIDATION,
             },
         )

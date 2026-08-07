@@ -6,7 +6,7 @@ from typing import Any
 
 import aiohttp
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 
 from .api import CapaApiError, CapaAuth, CapaAuthError, CapaClient
@@ -17,9 +17,6 @@ class CapaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Sign in once; store only the rotating refresh token, never the password."""
 
     VERSION = 1
-
-    def __init__(self) -> None:
-        self._reauth_entry: ConfigEntry | None = None
 
     async def _login(
         self, email: str, password: str
@@ -76,17 +73,13 @@ class CapaConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        assert self._reauth_entry is not None
-        entry = self._reauth_entry
+        entry = self._get_reauth_entry()
         if user_input is not None:
             refresh_token, _sites, error = await self._login(
                 entry.data[CONF_EMAIL], user_input[CONF_PASSWORD]
@@ -94,11 +87,9 @@ class CapaConfigFlow(ConfigFlow, domain=DOMAIN):
             if error:
                 errors["base"] = error
             else:
-                self.hass.config_entries.async_update_entry(
-                    entry, data={**entry.data, "refresh_token": refresh_token}
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={"refresh_token": refresh_token}
                 )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
