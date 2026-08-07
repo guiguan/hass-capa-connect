@@ -14,16 +14,31 @@ Azure AD B2C). There is no local API on these heaters, so this is a
 Each heater zone becomes a `climate` entity:
 
 - **HVAC modes:** `off`, `heat`
-- **Presets** (permanent modes only — no schedules):
-  - `comfort` — holds the zone's Comfort setpoint
-  - `eco` — holds the zone's Eco setpoint
-  - `away` — frost protection (~7 °C)
+- **Presets:** `comfort` (zone Comfort setpoint), `eco` (zone Eco setpoint),
+  `away` (frost protection, ~7 °C)
 - **Current temperature** — the heater's room sensor
-- **Target temperature** — adjusts the active preset's setpoint
+- **Target temperature** — whole-degree steps (the heater only accepts integers;
+  half-degrees are rounded up)
+- **Resume on turn-on** — turning the heater off and back on restores the
+  *previous* mode and setpoint instead of defaulting to Comfort. The last heating
+  state is remembered across Home Assistant restarts.
+- **Instant feedback** — a change made in HA (or in the Home app via the HomeKit
+  bridge) is reflected immediately; a background poll then reconciles it.
+- **Diagnostic attributes** — `gdhv_mode` (the raw device mode) and `schedule`
+  (the active schedule name).
 
-> The heater's built-in schedule feature is intentionally not exposed. Modes map
-> to the cloud's *permanent* variants (Off=0, Away=2, Comfort=5, Eco=8); the
-> "until next schedule block" and schedule-only modes are not used.
+The integration controls the heater using the cloud's four **permanent** modes:
+Off (0), Away (2), Comfort (5), Eco (8).
+
+## How it works
+
+- **Polling:** the cloud has no push API, so state is polled every 60 s. This
+  runs continuously in the background, so changes made elsewhere (the Capa app,
+  the heater's own controls) are picked up within a minute.
+- **Authentication:** you sign in once with your email and password; only the
+  rotating OAuth refresh token is stored — never the password. The token
+  auto-renews on each poll, so you should not need to sign in again. If it ever
+  expires, HA prompts you to re-enter your password (reauth).
 
 ## Installation
 
@@ -40,17 +55,26 @@ directory and restart.
 
 ## Configuration
 
-Settings → Devices & Services → **Add Integration** → "Capa Connect".
+Settings → Devices & Services → **Add Integration** → "Capa Connect", then enter
+the email and password for your Capa Connect account.
 
-Enter the email and password for your Capa Connect account. The password is used
-**once** to obtain an OAuth refresh token and is **not stored** — only the
-rotating refresh token is kept. If the token ever expires, HA will prompt you to
-re-enter your password (reauth).
+## Known limitations
 
-## Notes / limitations
-
-- Cloud polling only (default 60 s). State changes made in the app appear at the
-  next poll.
-- The account's first site and all its zones are imported; typically one heater.
-- This is unofficial and not affiliated with Glen Dimplex or Noirot. It relies
-  on a private API that could change at any time.
+- **Schedules are not fully modelled yet.** The integration maps the four
+  permanent modes. If the heater is switched into a *schedule-follow* mode
+  (`gdhv_mode` 3 or 6) or an *until-next-block* mode (4 or 7) — for example by the
+  Capa app — it currently shows as `heat`/on even when an all-off schedule (such
+  as one named "24 hour Off") means it is effectively off. The `gdhv_mode`
+  attribute exposes what the device is actually in.
+- **HomeKit temperature step.** Apple's Home app always offers a 0.5° slider for
+  thermostats — HA's HomeKit bridge hardcodes the characteristic step and ignores
+  the entity's step, and this can't be changed from an integration. The heater
+  still lands on a whole degree, because half-degree values are rounded before
+  being sent.
+- **Out-of-band changes** (Capa app, physical controls) appear at the next 60 s
+  poll, not instantly. HA is the single source of truth for the HomeKit bridge,
+  so all Home app clients on it stay consistent with HA.
+- The account's **first site** and all its zones are imported; typically one
+  heater.
+- This is **unofficial** and not affiliated with Glen Dimplex or Noirot. It
+  relies on a private API that could change at any time.
