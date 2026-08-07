@@ -35,6 +35,12 @@ from .coordinator import CapaCoordinator
 PARALLEL_UPDATES = 1
 
 
+def _round_half_up(value: float) -> int:
+    """Round to the nearest whole degree, ties going up. Setpoints are always
+    positive (MIN_TEMP..MAX_TEMP), so this is correct without a floor import."""
+    return int(value + 0.5)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -136,10 +142,10 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
             return
+        target = _round_half_up(temp)
         z = self._zone
-        await self.coordinator.client.set_setpoint(
-            z["site_id"], self._zone_id, round(temp)
-        )
+        await self.coordinator.client.set_setpoint(z["site_id"], self._zone_id, target)
+        self._apply_optimistic(setpoint=target)
         await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -154,8 +160,26 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
 
     async def _set_mode(self, mode: int) -> None:
         z = self._zone
-        # TEMP_NONE keeps the zone's stored Comfort/Eco setpoint.
+        # TEMP_NONE keeps the zone's stored Comfort/Eco setpoint and clears any
+        # live per-zone setpoint override.
         await self.coordinator.client.set_mode(
             z["site_id"], self._zone_id, mode, TEMP_NONE
         )
+        self._apply_optimistic(mode=mode, setpoint=TEMP_NONE)
         await self.coordinator.async_request_refresh()
+
+    def _apply_optimistic(
+        self, *, mode: int | None = None, setpoint: int | None = None
+    ) -> None:
+        """Reflect a just-sent change immediately in HA (and thus HomeKit, which
+        listens to state changes) instead of waiting for the reconciling poll.
+        The GDHV cloud is read-after-write consistent, so the follow-up refresh
+        confirms these values rather than reverting them."""
+        zone = self.coordinator.data["zones"].get(self._zone_id)
+        if zone is None:
+            return
+        if mode is not None:
+            zone["mode"] = mode
+        if setpoint is not None:
+            zone["setpoint"] = setpoint
+        self.async_write_ha_state()
