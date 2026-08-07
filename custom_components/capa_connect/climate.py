@@ -62,7 +62,9 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
     )
     _attr_min_temp = MIN_TEMP
     _attr_max_temp = MAX_TEMP
-    _attr_target_temperature_step = 0.5
+    # The heater only accepts whole degrees (it rounds 17.5 -> 18), so step by 1
+    # in HA. HA propagates this to HomeKit's TargetTemperature minStep too.
+    _attr_target_temperature_step = 1
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, coordinator: CapaCoordinator, zone_id: str) -> None:
