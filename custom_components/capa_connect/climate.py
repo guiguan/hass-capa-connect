@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
+    HEATING_MODES,
     MAX_TEMP,
     MIN_TEMP,
     MODE_COMFORT,
@@ -77,6 +78,19 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
         super().__init__(coordinator)
         self._zone_id = zone_id
         self._attr_unique_id = zone_id
+        # Remembered heating mode + setpoint so turning back on resumes them
+        # rather than defaulting to the Comfort preset's stored temperature.
+        self._resume_mode: int | None = None
+        self._resume_setpoint: int | None = None
+
+    def _handle_coordinator_update(self) -> None:
+        # Snapshot the last heating state on every poll, so a turn-on can resume
+        # it even when the heater was switched off outside HA (app / button).
+        z = self._zone
+        if z.get("mode") in HEATING_MODES:
+            self._resume_mode = z.get("mode")
+            self._resume_setpoint = z.get("setpoint")
+        super()._handle_coordinator_update()
 
     @property
     def _zone(self) -> dict[str, Any]:
@@ -149,9 +163,22 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], ClimateEntity):
         await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        # Turning "heat" on from off resumes the Comfort preset.
-        mode = MODE_OFF if hvac_mode == HVACMode.OFF else MODE_COMFORT
+        if hvac_mode == HVACMode.OFF:
+            z = self._zone
+            if z.get("mode") in HEATING_MODES:
+                # Capture the latest (incl. optimistic) state before off clears it.
+                self._resume_mode = z.get("mode")
+                self._resume_setpoint = z.get("setpoint")
+            await self._set_mode(MODE_OFF)
+            return
+        # Resume the pre-off mode, falling back to Comfort if we never saw one.
+        mode = self._resume_mode if self._resume_mode in HEATING_MODES else MODE_COMFORT
         await self._set_mode(mode)
+        # Restore a live setpoint override, if there was one, via the setpoint
+        # endpoint (the verified way to set a per-zone override).
+        resume = self._resume_setpoint
+        if isinstance(resume, int) and resume != TEMP_NONE:
+            await self.async_set_temperature(**{ATTR_TEMPERATURE: resume})
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         mode = PRESET_TO_MODE.get(preset_mode)
