@@ -60,13 +60,12 @@ the email and password for your Capa Connect account.
 
 ## Known limitations
 
-- **Schedule handling is partial.** When the heater runs its assigned schedule it
-  reports mode 13. A schedule block that is off (no setpoint — e.g. the default
-  "24 hour Off" schedule) is now shown as **off**; a block with a setpoint reads
-  as heating at that temperature. Only the off case has been verified against real
-  hardware — the heating-block path is inferred. The `until-next-block` modes
-  (4/7) still show as generic `heat` without a preset. The `gdhv_mode` attribute
-  exposes the raw device mode.
+- **Standby and schedules.** Putting the zone in **standby** — the app's "no
+  heating / Until schedule resumed" state, where the schedule is suspended —
+  reports mode 13, and the integration shows this as **off** to match the app.
+  Actively *running* a schedule with heating blocks is not modelled: the
+  `until-next-block` modes (4/7) show as generic `heat` without a preset. The
+  `gdhv_mode` attribute exposes the raw device mode.
 - **HomeKit temperature step.** Apple's Home app always offers a 0.5° slider for
   thermostats — HA's HomeKit bridge hardcodes the characteristic step and ignores
   the entity's step, and this can't be changed from an integration. The heater
