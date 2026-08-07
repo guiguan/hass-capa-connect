@@ -29,8 +29,14 @@ class CapaConfigFlow(ConfigFlow, domain=DOMAIN):
         Uses a dedicated session: the multi-step B2C flow depends on the
         ``x-ms-cpim-*`` cookies from the authorize call being carried forward,
         and this keeps them out of HA's shared cookie jar.
+
+        quote_cookie=False is required: those cookie values contain ``+ / . =``,
+        which aiohttp would otherwise wrap in double quotes on the way back out.
+        B2C sends them raw and rejects the quoted form as "Bad Request", so the
+        SelfAsserted POST fails before any credential check.
         """
-        async with aiohttp.ClientSession() as session:
+        jar = aiohttp.CookieJar(quote_cookie=False)
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
             auth = CapaAuth(session)
             try:
                 refresh_token = await auth.login(email, password)

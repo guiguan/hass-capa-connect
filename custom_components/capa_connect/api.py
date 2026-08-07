@@ -36,6 +36,19 @@ class CapaApiError(Exception):
     """A device-API call failed."""
 
 
+async def _read_json(resp: aiohttp.ClientResponse, what: str) -> dict[str, Any]:
+    """Parse a JSON body, turning a non-JSON reply into a clean CapaApiError
+    instead of a raw JSONDecodeError (which HA would surface as "Unknown error").
+    """
+    text = await resp.text()
+    try:
+        return json.loads(text) if text.strip() else {}
+    except json.JSONDecodeError as err:
+        raise CapaApiError(
+            f"{what}: unexpected non-JSON reply (HTTP {resp.status})"
+        ) from err
+
+
 def _pkce() -> tuple[str, str]:
     """Return (code_verifier, code_challenge) for PKCE S256."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -87,7 +100,7 @@ class CapaAuth:
             "refresh_token": self._refresh_token,
         }
         async with self._session.post(TOKEN_URL, data=data) as resp:
-            body = await resp.json(content_type=None)
+            body = await _read_json(resp, "token refresh")
         if resp.status != 200 or "access_token" not in body:
             raise CapaAuthError(f"Token refresh failed ({resp.status}): {body}")
         self._store(body)
@@ -137,7 +150,7 @@ class CapaAuth:
         async with self._session.post(
             SELFASSERTED_URL, params=sa_params, data=sa_data, headers=sa_headers
         ) as resp:
-            sa_body = await resp.json(content_type=None)
+            sa_body = await _read_json(resp, "sign-in")
         if str(sa_body.get("status")) != "200":
             raise CapaAuthError(f"Login rejected: {sa_body}")
 
@@ -167,7 +180,7 @@ class CapaAuth:
             "code_verifier": verifier,
         }
         async with self._session.post(TOKEN_URL, data=data) as resp:
-            body = await resp.json(content_type=None)
+            body = await _read_json(resp, "token exchange")
         if resp.status != 200 or "access_token" not in body:
             raise CapaAuthError(f"Code exchange failed ({resp.status}): {body}")
         self._store(body)
