@@ -73,6 +73,10 @@ class CapaCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "appliance_id": appliance_id,
                         "model": app.get("ProductModelName"),
                         "firmware": app.get("FirmwareVersion"),
+                        "schedule": (setting.get("DirectSchedule") or {}).get(
+                            "ScheduleName"
+                        ),
+                        "schedule_id": setting.get("ScheduleId"),
                     }
         except CapaAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

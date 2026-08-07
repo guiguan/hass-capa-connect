@@ -181,6 +181,14 @@ class CapaClimate(CoordinatorEntity[CapaCoordinator], RestoreEntity, ClimateEnti
     def preset_mode(self) -> str | None:
         return MODE_TO_PRESET.get(self._zone.get("mode"))
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # Diagnostics: the raw GDHV mode surfaces schedule (3/6) and
+        # until-next-block (4/7) modes that aren't one of the four presets,
+        # plus the active schedule name (e.g. "24 hour Off").
+        z = self._zone
+        return {"gdhv_mode": z.get("mode"), "schedule": z.get("schedule")}
+
     async def async_set_temperature(self, **kwargs: Any) -> None:
         temp = kwargs.get(ATTR_TEMPERATURE)
         if temp is None:
