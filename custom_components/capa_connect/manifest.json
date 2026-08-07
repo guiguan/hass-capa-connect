@@ -1,0 +1,12 @@
+{
+  "domain": "capa_connect",
+  "name": "Capa Connect (Noirot / GDHV)",
+  "codeowners": ["@guiguan"],
+  "config_flow": true,
+  "documentation": "https://github.com/guiguan/hass-capa-connect",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/guiguan/hass-capa-connect/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
